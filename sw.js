@@ -1,10 +1,12 @@
 // Guarda la app en el celular para poder jugar sin conexión.
-const CACHE = 'domino-v1';
+const CACHE = 'domino-v2';
 const ASSETS = [
   './',
   './index.html',
   './styles.css',
   './game.js',
+  './board3d.js',
+  './vendor/three.min.js',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

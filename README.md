@@ -1,6 +1,6 @@
 # Dominó
 
-Dominó en 2D para un jugador: tú contra el celular. Es una app web instalable (PWA):
+Dominó en 3D para un jugador: tú contra el celular. Es una app web instalable (PWA):
 se instala desde el navegador del celular, sin PC, y funciona sin internet.
 
 ## Cómo jugar
@@ -11,6 +11,8 @@ se instala desde el navegador del celular, sin PC, y funciona sin internet.
 - Quien se queda sin fichas gana la mano y suma los puntos del rival. En un tranque gana quien tenga menos puntos.
 - Gana la partida el primero en llegar a la meta (50, 100, 150 o 200).
 - Tres niveles de dificultad para el celular. La partida se guarda sola.
+- Mesa en 3D: desliza un dedo sobre la mesa para girarla, pellizca para acercar y toca dos veces para volver a la vista normal.
+  En el menú puedes cambiar a la mesa 2D (también se usa sola si el celular no soporta 3D).
 
 ## Instalar en el celular (sin PC)
 
@@ -24,5 +26,7 @@ Queda un ícono como cualquier app y se puede jugar sin conexión.
 
 ## Archivos
 
-- `index.html`, `styles.css`, `game.js`: el juego.
+- `index.html`, `styles.css`, `game.js`: el juego (reglas, IA, mano y mesa 2D).
+- `board3d.js`: la mesa 3D.
+- `vendor/three.min.js`: librería [Three.js](https://threejs.org) r160 (licencia MIT, en `vendor/THREE-LICENSE`).
 - `manifest.webmanifest`, `sw.js`, `icons/`: instalación y modo sin conexión.

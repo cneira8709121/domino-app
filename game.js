@@ -19,7 +19,7 @@
   };
 
   const settings = Object.assign(
-    { level: 'normal', target: 100, sound: true, hints: true },
+    { level: 'normal', target: 100, sound: true, hints: true, view: '3d' },
     store.get(SETTINGS_KEY) || {},
   );
   const saveSettings = () => store.set(SETTINGS_KEY, settings);
@@ -213,7 +213,8 @@
   let g = null; // estado de la partida en curso
   let board = null;
   let token = 0; // invalida turnos del celular pendientes al reiniciar
-  let layout = { unit: 30, ox: 0, oy: 0 };
+  let layout = { unit: 30, ox: 0, oy: 0 }; // escala de la mesa 2D
+  let view3d = null; // mesa 3D (board3d.js); null si se usa la mesa 2D
 
   const el = {
     board: $('board'), boardInner: $('boardInner'), hand: $('hand'),
@@ -231,8 +232,9 @@
     // Depende solo de la orientación de la pantalla, para que la serpiente no cambie
     // de forma cuando la mano crece o se encoge.
     const ratio = window.innerWidth / window.innerHeight;
-    if (ratio < 1) return 6.5;
-    return Math.max(7.5, Math.min(12, Math.round(ratio * 5 * 2) / 2));
+    // En 3D la cámara inclinada aprovecha mejor el alto: filas más cortas y fichas más grandes.
+    if (ratio < 1) return view3d ? 4.5 : 6.5;
+    return Math.max(7.5, Math.min(view3d ? 9 : 12, Math.round(ratio * 5 * 2) / 2));
   }
 
   function newMatch() {
@@ -581,18 +583,24 @@
     el.pool.disabled = g.pool.length === 0;
   }
 
-  function computeLayout() {
-    const bw = el.board.clientWidth;
-    const bh = el.board.clientHeight;
+  // Rectángulos que debe abarcar la vista: las fichas y el lugar de la próxima en cada
+  // extremo, así la mesa no salta al soltar.
+  function boardRects() {
     const rects = board.placed.slice();
     if (board.empty) rects.push({ x: -1.5, y: -1.5, w: 3, h: 3 });
     else {
-      // Reserva espacio para la próxima ficha en cada extremo, así la mesa no salta al soltar.
       for (const side of ['L', 'R']) {
         const v = board.endValue(side);
         rects.push(board.plan({ a: v, b: (v + 1) % 7 }, side));
       }
     }
+    return rects;
+  }
+
+  // Solo para la mesa 2D: escala y desplazamiento para pasar de unidades a píxeles.
+  function computeLayout(rects) {
+    const bw = el.board.clientWidth;
+    const bh = el.board.clientHeight;
     let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
     for (const r of rects) {
       minX = Math.min(minX, r.x); minY = Math.min(minY, r.y);
@@ -616,14 +624,19 @@
   }
 
   function renderBoard() {
-    computeLayout();
+    const rects = boardRects();
     const frag = document.createDocumentFragment();
-    for (const p of board.placed) {
-      const d = document.createElement('div');
-      d.className = 'placed';
-      d.innerHTML = tileSVG(p.first, p.second, p.vertical);
-      placeRect(d, p);
-      frag.appendChild(d);
+    if (view3d) {
+      view3d.sync(board.placed, rects);
+    } else {
+      computeLayout(rects);
+      for (const p of board.placed) {
+        const d = document.createElement('div');
+        d.className = 'placed';
+        d.innerHTML = tileSVG(p.first, p.second, p.vertical);
+        placeRect(d, p);
+        frag.appendChild(d);
+      }
     }
     if (board.empty) {
       const hint = document.createElement('div');
@@ -632,14 +645,22 @@
       frag.appendChild(hint);
     }
     el.boardInner.replaceChildren(frag);
-    ghosts = [];
+    clearGhosts();
   }
 
+  // from: { world, rotY } (ficha 3D que se arrastraba) o un rectángulo de pantalla
+  // { left, top, width, height, vertical } (la mano o la zona del celular).
   function animateLastTile(from) {
+    if (view3d) {
+      if (from && from.world) view3d.animateLast(from);
+      else if (from) view3d.animateLast({ screen: { x: from.left + from.width / 2, y: from.top + from.height / 2 }, vertical: from.vertical });
+      else view3d.animateLast(null);
+      return;
+    }
     const all = el.boardInner.querySelectorAll('.placed');
     const node = all[all.length - 1];
     if (!node) return;
-    if (!from || !node.animate) { node.classList.add('pop'); return; }
+    if (!from || from.world || !node.animate) { node.classList.add('pop'); return; }
     const to = node.getBoundingClientRect();
     const p = board.placed[board.placed.length - 1];
     const rotate = from.vertical !== p.vertical;
@@ -684,35 +705,47 @@
 
   let drag = null;
   let selected = null; // ficha elegida con un toque cuando cabe en ambos extremos
-  let ghosts = [];
+  let ghosts = []; // mesa 2D: { side, node }. En 3D los recuadros los maneja view3d.
 
+  // Muestra dónde cabría la ficha (recuadros iluminados).
   function showGhosts(t, sides) {
     clearGhosts();
+    if (view3d) {
+      view3d.showGhosts(sides.map((side) => ({ side, plan: board.plan(t, side) })));
+      return;
+    }
     for (const side of sides) {
-      const p = board.plan(t, side);
       const d = document.createElement('div');
       d.className = 'ghost';
       d.dataset.side = side;
-      placeRect(d, p);
+      placeRect(d, board.plan(t, side));
       el.boardInner.appendChild(d);
       ghosts.push({ side, node: d });
     }
   }
 
   function clearGhosts() {
+    if (view3d) view3d.clearGhosts();
     for (const gh of ghosts) gh.node.remove();
     ghosts = [];
   }
 
-  function nearestGhost(x, y) {
+  // Extremo ('L' o 'R') cuyo recuadro está más cerca del punto de la pantalla.
+  function nearestGhost(x, y, maxDist = Infinity) {
+    if (view3d) return view3d.nearestGhost(x, y, maxDist);
     let best = null;
-    let bestD = Infinity;
+    let bestD = maxDist;
     for (const gh of ghosts) {
       const r = gh.node.getBoundingClientRect();
       const d = Math.hypot(r.left + r.width / 2 - x, r.top + r.height / 2 - y);
-      if (d < bestD) { bestD = d; best = gh; }
+      if (d < bestD) { bestD = d; best = gh.side; }
     }
     return best;
+  }
+
+  function setHot(side) {
+    if (view3d) view3d.setHot(side);
+    for (const gh of ghosts) gh.node.classList.toggle('hot', gh.side === side);
   }
 
   function canAct() {
@@ -778,8 +811,14 @@
     f.style.top = `${y - drag.w * 1.6}px`;
     const overBoard = y < el.hand.getBoundingClientRect().top;
     const hot = overBoard ? nearestGhost(x, y - drag.w * 0.6) : null;
-    for (const gh of ghosts) gh.node.classList.toggle('hot', gh === hot);
+    setHot(hot);
     drag.hot = hot;
+    if (view3d) {
+      // Sobre la mesa, la ficha pasa a ser 3D y gira hacia el extremo donde caería.
+      f.style.visibility = overBoard ? 'hidden' : '';
+      if (overBoard) view3d.hoverAt(drag.t, x, y - drag.w * 0.9, hot);
+      else view3d.hoverHide();
+    }
   }
 
   function endDrag(e, cancelled) {
@@ -791,13 +830,12 @@
       return;
     }
     const fr = d.float.getBoundingClientRect();
+    const from3d = view3d ? view3d.hoverEnd() : null;
     d.float.remove();
     d.node.classList.remove('lifted');
+    clearGhosts();
     if (!cancelled && d.hot) {
-      clearGhosts();
-      doPlay(HUMAN, d.t, d.hot.side, { left: fr.left, top: fr.top, width: fr.width, height: fr.height, vertical: true });
-    } else {
-      clearGhosts();
+      doPlay(HUMAN, d.t, d.hot, from3d || { left: fr.left, top: fr.top, width: fr.width, height: fr.height, vertical: true });
     }
   }
 
@@ -821,13 +859,16 @@
 
   el.board.addEventListener('click', (e) => {
     if (!selected || !canAct()) return;
-    const gh = e.target.closest('.ghost');
-    if (gh) {
+    if (view3d && view3d.wasDragged()) return; // fue un giro de la mesa, no un toque
+    const side = view3d
+      ? nearestGhost(e.clientX, e.clientY, 90)
+      : e.target.closest('.ghost')?.dataset.side;
+    if (side) {
       const t = selected;
       const node = el.hand.querySelector(`[data-id="${t.id}"]`);
       const r = node ? node.getBoundingClientRect() : null;
       clearSelection();
-      doPlay(HUMAN, t, gh.dataset.side, r && { left: r.left, top: r.top, width: r.width, height: r.height, vertical: true });
+      doPlay(HUMAN, t, side, r && { left: r.left, top: r.top, width: r.width, height: r.height, vertical: true });
     } else {
       clearSelection();
       promptHuman();
@@ -857,6 +898,8 @@
         ${seg('level', [['facil', 'Fácil'], ['normal', 'Normal'], ['dificil', 'Difícil']], settings.level)}</div>
       <div class="field"><label>Puntos para ganar (partida nueva)</label>
         ${seg('target', [[50, '50'], [100, '100'], [150, '150'], [200, '200']], settings.target)}</div>
+      <div class="field"><label>Mesa</label>
+        ${seg('view', [['3d', '3D'], ['2d', '2D']], settings.view)}</div>
       <div class="field"><label>Opciones</label>
         ${seg('sound', [[true, '🔊 Sonido'], [false, '🔇 Silencio']], settings.sound)}
         <div style="height:6px"></div>
@@ -917,6 +960,11 @@
       s.parentElement.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === s));
       if (name === 'hints' && g) renderHand();
       if (name === 'sound' && v) { sound.unlock(); sound.clack(); }
+      if (name === 'view') {
+        // Cambiar de mesa recarga la app; la partida en curso está guardada.
+        save();
+        location.reload();
+      }
       return;
     }
     const b = e.target.closest('[data-act]');
@@ -949,6 +997,7 @@
   let lastHalfW = null;
   const ro = new ResizeObserver(() => {
     if (!g || !board) return;
+    if (view3d) view3d.resize();
     const hw = halfWidthForBoard();
     if (hw !== lastHalfW) {
       lastHalfW = hw;
@@ -962,6 +1011,10 @@
   ro.observe(el.board);
 
   function boot() {
+    if (settings.view !== '2d' && window.Board3D) {
+      view3d = window.Board3D.create(el.board);
+      if (view3d) el.board.classList.add('is3d');
+    }
     if (load()) {
       lastHalfW = board.halfW;
       renderAll();
